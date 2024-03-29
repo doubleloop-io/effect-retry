@@ -6,6 +6,9 @@ import * as Cause from "effect/Cause"
 import * as Http from "@effect/platform/HttpClient"
 import * as Schema from "@effect/schema/Schema"
 import * as F from "effect/Function"
+import * as Schedule from "effect/Schedule"
+import * as Match from "effect/Match"
+import * as ParseResult from "@effect/schema/ParseResult"
 
 const mockServer = mockttp.getLocal()
 
@@ -24,9 +27,9 @@ test("retry once", async () => {
     await replyError(500)
     await replyOk("Hello, world!")
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.once), run)
 
-    // expect(result).toEqual("Hello, world!")
+    expect(result).toEqual("Hello, world!")
 })
 
 test("retry forever", async () => {
@@ -34,9 +37,9 @@ test("retry forever", async () => {
     await replyError(500)
     await replyOk("Hello, world!")
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.forever), run)
 
-    // expect(result).toEqual("Hello, world!")
+    expect(result).toEqual("Hello, world!")
 })
 
 test("too much errors", async () => {
@@ -45,31 +48,55 @@ test("too much errors", async () => {
     await replyError(500)
     await replyOk("Hello, world!") // Too late
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.recurs(3)), runExit)
 
-    // expectFailureWithStatusCode(result, 500)
+    expectFailureWithStatusCode(result, 500)
 })
 
-describe("unrecoverable errors", () => {
-    const request = null
+describe("fatal errors", () => {
+    const fatal = F.pipe(Match.type<Http.error.HttpClientError | ParseResult.ParseError>(),
+        Match.tag("ResponseError", (x) => x.response.status === 404),
+        Match.tag("ParseError", F.constTrue),
+        Match.tag("RequestError", F.constFalse),
+        Match.exhaustive,
+    )
 
-    test("unrecoverable", async () => {
+    const request = F.pipe(helloWorld, Effect.retry({
+        schedule: Schedule.recurs(3),
+        until: fatal,
+    }))
+
+    test("fatal", async () => {
         await replyError(404)
         await replyOk("Hello, world!")
 
-        // const result = await F.pipe(request, runExit)
-        //
-        // expectFailureWithStatusCode(result, 404)
+        const result = await F.pipe(request, runExit)
+
+        expectFailureWithStatusCode(result, 404)
     })
 
-    test("recoverable", async () => {
+    test("non fatal", async () => {
         await replyError(500)
         await replyOk("Hello, world!")
 
-        // const result = await F.pipe(request, run)
-        //
-        // expect(result).toEqual("Hello, world!")
+        const result = await F.pipe(request, run)
+
+        expect(result).toEqual("Hello, world!")
     })
+})
+
+test("exponential backoff", async () => {
+    await replyError(500)
+    await replyError(500)
+    await replyError(500)
+    await replyOk("Hello, world!") // Too late
+
+    const result = await F.pipe(helloWorld, Effect.retry(F.pipe(
+            Schedule.exponential("100 millis", 2),
+            Schedule.mapEffect((out) => Effect.logInfo(`Retrying after ${out}`)))),
+        run)
+
+    expect(result).toEqual("Hello, world!")
 })
 
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
