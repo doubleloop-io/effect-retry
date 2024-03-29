@@ -132,6 +132,32 @@ test("fixed", async () => {
     expect(result).toEqual("Hello, world!")
 })
 
+test("timeout", async () => {
+    await replyError("timeout", 500)
+    await replyError("timeout", 500)
+    await replyError("timeout", 500)
+    await replyOk("timeout", "Hello, world!") // This won't be reached
+
+    const result = await Effect.gen(function* (_) {
+        const ret = yield* _(
+            helloWorld("timeout"),
+            Effect.retry(Schedule.exponential("100 millis", 2)),
+            Effect.timeout("500 millis"),
+            Effect.fork,
+        )
+
+        yield* _(TestClock.adjust("100 millis"))
+        yield* _(TestClock.adjust("200 millis"))
+        yield* _(TestClock.adjust("200 millis")) // Timeout
+
+        return yield* _(Effect.fromFiber(ret))
+    }).pipe(runExit)
+
+    expectIsFailure(result)
+    expectIsFail(result.cause)
+    expect(result.cause.error).toBeInstanceOf(Cause.TimeoutException)
+})
+
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
     F.pipe(effect, Effect.provide(Http.client.layer), Effect.provide(TestContext.TestContext))
 
