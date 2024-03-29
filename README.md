@@ -1,4 +1,4 @@
-# Effect fetch
+# Effect retry examples
 
 
 ## Installation
