@@ -110,6 +110,28 @@ test("exponential backoff", async () => {
     expect(result).toEqual("Hello, world!")
 })
 
+test("fixed", async () => {
+    await replyError("fixed", 500)
+    await replyError("fixed", 500)
+    await replyOk("fixed", "Hello, world!")
+
+    const result = await Effect.gen(function* (_) {
+        const ret = yield* _(
+            //keep new line
+            helloWorld("fixed"),
+            Effect.retry(Schedule.fixed("100 millis")),
+            Effect.fork,
+        )
+
+        yield* _(TestClock.adjust("100 millis"))
+        yield* _(TestClock.adjust("100 millis"))
+
+        return yield* _(Effect.fromFiber(ret))
+    }).pipe(run)
+
+    expect(result).toEqual("Hello, world!")
+})
+
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
     F.pipe(effect, Effect.provide(Http.client.layer), Effect.provide(TestContext.TestContext))
 
