@@ -33,11 +33,16 @@ test("retry once", async () => {
 test("retry forever", async () => {
     await replyError(500)
     await replyError(500)
+    await replyError(500)
+    await replyError(500)
+    await replyError(500)
+    await replyError(500)
+    await replyError(500)
     await replyOk("Hello, world!")
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.forever), run)
 
-    // expect(result).toEqual("Hello, world!")
+    expect(result).toEqual("Hello, world!")
 })
 
 test("too much errors", async () => {
