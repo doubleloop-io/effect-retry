@@ -51,9 +51,9 @@ test("too much errors", async () => {
     await replyError(500)
     await replyOk("Hello, world!") // Too late
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.recurs(3)), runExit)
 
-    // expectFailureWithStatusCode(result, 500)
+    expectFailureWithStatusCode(result, 500)
 })
 
 describe("unrecoverable errors", () => {
