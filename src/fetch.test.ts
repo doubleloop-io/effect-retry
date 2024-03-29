@@ -5,8 +5,10 @@ import * as Exit from "effect/Exit"
 import * as Cause from "effect/Cause"
 import * as Http from "@effect/platform/HttpClient"
 import * as Schema from "@effect/schema/Schema"
+import * as ParseResult from "@effect/schema/ParseResult"
 import * as F from "effect/Function"
 import * as Schedule from "effect/Schedule"
+import * as Match from "effect/Match"
 
 const mockServer = mockttp.getLocal()
 
@@ -56,25 +58,45 @@ test("too much errors", async () => {
     expectFailureWithStatusCode(result, 500)
 })
 
-describe("unrecoverable errors", () => {
-    const request = null
+describe("fatal errors", () => {
+    const fatalError = F.pipe(
+        Match.type<Http.error.HttpClientError | ParseResult.ParseError>(),
+        Match.tag("ResponseError", (x) => x.response.status === 404),
+        Match.tag("ParseError", F.constTrue),
+        Match.tag("RequestError", F.constFalse),
+        Match.exhaustive,
+    )
+    const fatalErrorWithValue = (x: Http.error.HttpClientError | ParseResult.ParseError) =>
+        F.pipe(
+            Match.value(x),
+            Match.tag("ResponseError", (x) => x.response.status === 404),
+            Match.tag("ParseError", F.constTrue),
+            Match.orElse(() => false),
+        )
+    const request = F.pipe(
+        helloWorld,
+        Effect.retry({
+            schedule: Schedule.recurs(3),
+            until: fatalError,
+        }),
+    )
 
-    test("unrecoverable", async () => {
+    test("fatal", async () => {
         await replyError(404)
         await replyOk("Hello, world!")
 
-        // const result = await F.pipe(request, runExit)
-        //
-        // expectFailureWithStatusCode(result, 404)
+        const result = await F.pipe(request, runExit)
+
+        expectFailureWithStatusCode(result, 404)
     })
 
-    test("recoverable", async () => {
+    test("not fatal", async () => {
         await replyError(500)
         await replyOk("Hello, world!")
 
-        // const result = await F.pipe(request, run)
-        //
-        // expect(result).toEqual("Hello, world!")
+        const result = await F.pipe(request, run)
+
+        expect(result).toEqual("Hello, world!")
     })
 })
 
