@@ -100,6 +100,28 @@ describe("fatal errors", () => {
     })
 })
 
+test("exponential backoff", async () => {
+    await replyError(500)
+    await replyError(500)
+    await replyError(500)
+    await replyOk("Hello, world!")
+
+    const result = await F.pipe(
+        helloWorld,
+        Effect.retry(
+            F.pipe(
+                //keep new line
+                Schedule.exponential("100 millis", 2),
+                // Schedule.intersect(Schedule.recurs(3)),
+            ),
+        ),
+        // Effect.timeout("1 seconds"),
+        run,
+    )
+
+    expect(result).toEqual("Hello, world!")
+})
+
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
     F.pipe(effect, Effect.provide(Http.client.layer))
 
