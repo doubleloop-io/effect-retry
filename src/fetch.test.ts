@@ -6,6 +6,7 @@ import * as Cause from "effect/Cause"
 import * as Http from "@effect/platform/HttpClient"
 import * as Schema from "@effect/schema/Schema"
 import * as F from "effect/Function"
+import * as Schedule from "effect/Schedule"
 
 const mockServer = mockttp.getLocal()
 
@@ -24,9 +25,9 @@ test("retry once", async () => {
     await replyError(500)
     await replyOk("Hello, world!")
 
-    const result = null
+    const result = await F.pipe(helloWorld, Effect.retry(Schedule.once), run)
 
-    // expect(result).toEqual("Hello, world!")
+    expect(result).toEqual("Hello, world!")
 })
 
 test("retry forever", async () => {
