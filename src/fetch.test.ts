@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import mockttp from "mockttp"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
@@ -9,81 +9,67 @@ import * as ParseResult from "@effect/schema/ParseResult"
 import * as F from "effect/Function"
 import * as Schedule from "effect/Schedule"
 import * as Match from "effect/Match"
+import * as TestContext from "effect/TestContext"
+import * as TestClock from "effect/TestClock"
 
 const mockServer = mockttp.getLocal()
 
-beforeEach(() => mockServer.start(8080))
-afterEach(() => mockServer.stop())
+beforeAll(() => mockServer.start(8080))
+afterAll(() => mockServer.stop())
 
 test("HTTP 200", async () => {
-    await replyOk("Hello, world!")
+    await replyOk("http200", "Hello, world!")
 
-    const result = await F.pipe(helloWorld, run)
+    const result = await F.pipe(helloWorld("http200"), run)
 
     expect(result).toEqual("Hello, world!")
 })
 
 test("retry once", async () => {
-    await replyError(500)
-    await replyOk("Hello, world!")
+    await replyError("once", 500)
+    await replyOk("once", "Hello, world!")
 
-    const result = await F.pipe(helloWorld, Effect.retry(Schedule.once), run)
+    const result = await F.pipe(helloWorld("once"), Effect.retry(Schedule.once), run)
 
     expect(result).toEqual("Hello, world!")
 })
 
 test("retry forever", async () => {
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyOk("Hello, world!")
+    await replyError("forever", 500)
+    await replyError("forever", 500)
+    await replyOk("forever", "Hello, world!")
 
-    const result = await F.pipe(helloWorld, Effect.retry(Schedule.forever), run)
+    const result = await F.pipe(helloWorld("forever"), Effect.retry(Schedule.forever), run)
 
     expect(result).toEqual("Hello, world!")
 })
 
 test("too much errors", async () => {
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyOk("Hello, world!") // Too late
+    await replyError("too-much", 500)
+    await replyError("too-much", 500)
+    await replyError("too-much", 500)
+    await replyError("too-much", 500)
+    await replyOk("too-much", "Hello, world!") // Too late
 
-    const result = await F.pipe(helloWorld, Effect.retry(Schedule.recurs(3)), runExit)
+    const result = await F.pipe(helloWorld("too-much"), Effect.retry(Schedule.recurs(3)), runExit)
 
     expectFailureWithStatusCode(result, 500)
 })
 
 describe("fatal errors", () => {
-    const fatalError = F.pipe(
+    const unrecoverableErrors = F.pipe(
         Match.type<Http.error.HttpClientError | ParseResult.ParseError>(),
         Match.tag("ResponseError", (x) => x.response.status === 404),
-        Match.tag("ParseError", F.constTrue),
-        Match.tag("RequestError", F.constFalse),
-        Match.exhaustive,
+        Match.orElse(() => false),
     )
-    const fatalErrorWithValue = (x: Http.error.HttpClientError | ParseResult.ParseError) =>
-        F.pipe(
-            Match.value(x),
-            Match.tag("ResponseError", (x) => x.response.status === 404),
-            Match.tag("ParseError", F.constTrue),
-            Match.orElse(() => false),
-        )
     const request = F.pipe(
-        helloWorld,
-        Effect.retry({
-            schedule: Schedule.recurs(3),
-            until: fatalError,
-        }),
+        helloWorld("fatal"),
+        Effect.retry({ schedule: Schedule.recurs(3), until: unrecoverableErrors }),
     )
 
     test("fatal", async () => {
-        await replyError(404)
-        await replyOk("Hello, world!")
+        await replyError("fatal", 404)
+        await replyOk("fatal", "Hello, world!")
 
         const result = await F.pipe(request, runExit)
 
@@ -91,8 +77,8 @@ describe("fatal errors", () => {
     })
 
     test("not fatal", async () => {
-        await replyError(500)
-        await replyOk("Hello, world!")
+        await replyError("fatal", 500)
+        await replyOk("fatal", "Hello, world!")
 
         const result = await F.pipe(request, run)
 
@@ -101,45 +87,50 @@ describe("fatal errors", () => {
 })
 
 test("exponential backoff", async () => {
-    await replyError(500)
-    await replyError(500)
-    await replyError(500)
-    await replyOk("Hello, world!")
+    await replyError("backoff", 500)
+    await replyError("backoff", 500)
+    await replyError("backoff", 500)
+    await replyOk("backoff", "Hello, world!")
 
-    const result = await F.pipe(
-        helloWorld,
-        Effect.retry(
-            F.pipe(
-                //keep new line
-                Schedule.exponential("100 millis", 2),
-                // Schedule.intersect(Schedule.recurs(3)),
-            ),
-        ),
-        // Effect.timeout("1 seconds"),
-        run,
-    )
+    const result = await Effect.gen(function* (_) {
+        const ret = yield* _(
+            //keep new line
+            helloWorld("backoff"),
+            Effect.retry(Schedule.exponential("100 millis", 2)),
+            Effect.fork,
+        )
+
+        yield* _(TestClock.adjust("100 millis"))
+        yield* _(TestClock.adjust("200 millis"))
+        yield* _(TestClock.adjust("400 millis"))
+
+        return yield* _(Effect.fromFiber(ret))
+    }).pipe(run)
 
     expect(result).toEqual("Hello, world!")
 })
 
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
-    F.pipe(effect, Effect.provide(Http.client.layer))
+    F.pipe(effect, Effect.provide(Http.client.layer), Effect.provide(TestContext.TestContext))
 
 const run = F.flow(provideLayers, Effect.runPromise)
 const runExit = F.flow(provideLayers, Effect.runPromiseExit)
 
-const helloWorld = Effect.gen(function* (_) {
-    const defaultClient = yield* _(Http.client.Client)
-    const client = defaultClient.pipe(Http.client.filterStatusOk)
+const helloWorld = (prefix: string) =>
+    Effect.gen(function* (_) {
+        const defaultClient = yield* _(Http.client.Client)
+        const client = defaultClient.pipe(Http.client.filterStatusOk)
 
-    return yield* _(
-        client(Http.request.get("http://localhost:8080/hello-world")),
-        Http.response.schemaBodyJsonEffect(Schema.string),
-    )
-})
+        return yield* _(
+            client(Http.request.get(`http://localhost:8080/${prefix}/hello-world`)),
+            Http.response.schemaBodyJsonEffect(Schema.string),
+        )
+    })
 
-const replyOk = (body: string) => mockServer.forGet("/hello-world").thenReply(200, JSON.stringify(body))
-const replyError = (status: number) => mockServer.forGet("/hello-world").thenReply(status)
+const replyOk = (prefix: string, body: string) =>
+    mockServer.forGet(`/${prefix}/hello-world`).thenReply(200, JSON.stringify(body))
+
+const replyError = (prefix: string, status: number) => mockServer.forGet(`/${prefix}/hello-world`).thenReply(status)
 
 function expectIsFailure<A, E>(exit: Exit.Exit<A, E>): asserts exit is Exit.Failure<A, E> {
     expect(Exit.isFailure(exit), "Expected to be Failure, but it was Success").toBeTruthy()
