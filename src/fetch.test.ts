@@ -158,6 +158,53 @@ test("timeout", async () => {
     expect(result.cause.error).toBeInstanceOf(Cause.TimeoutException)
 })
 
+describe("fixed vs spaced", () => {
+    const _200msTask = Effect.sleep("200 millis")
+    const adjustClockForTask = TestClock.adjust("200 millis")
+
+    test("job duration reduce repetition intervals", async () => {
+        await Effect.gen(function* (_) {
+            const ret = yield* _(
+                _200msTask,
+                Effect.repeat(Schedule.intersect(Schedule.fixed("100 millis"), Schedule.recurs(3))),
+                Effect.fork,
+            )
+
+            yield* _(adjustClockForTask)
+            yield* _(TestClock.adjust("35 millis")) // awake Effect (?)
+            yield* _(adjustClockForTask)
+            yield* _(TestClock.adjust("35 millis")) // awake Effect (?)
+            yield* _(adjustClockForTask)
+            yield* _(TestClock.adjust("35 millis")) // awake Effect (?)
+            yield* _(adjustClockForTask)
+
+            yield* _(Effect.fromFiber(ret))
+        }).pipe(run)
+    })
+
+    test("job duration doesn't reduce repetition intervals", async () => {
+        const adjustClockForSpacedInterval = TestClock.adjust("100 millis")
+
+        await Effect.gen(function* (_) {
+            const ret = yield* _(
+                _200msTask,
+                Effect.repeat(Schedule.intersect(Schedule.spaced("100 millis"), Schedule.recurs(3))),
+                Effect.fork,
+            )
+
+            yield* _(adjustClockForTask)
+            yield* _(adjustClockForSpacedInterval)
+            yield* _(adjustClockForTask)
+            yield* _(adjustClockForSpacedInterval)
+            yield* _(adjustClockForTask)
+            yield* _(adjustClockForSpacedInterval)
+            yield* _(adjustClockForTask)
+
+            yield* _(Effect.fromFiber(ret))
+        }).pipe(run)
+    })
+})
+
 const provideLayers = <A, E>(effect: Effect.Effect<A, E, Http.client.Client.Default>) =>
     F.pipe(effect, Effect.provide(Http.client.layer), Effect.provide(TestContext.TestContext))
 
